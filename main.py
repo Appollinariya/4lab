@@ -1,40 +1,42 @@
 from flask import Flask, request, jsonify
 import os
-import psycopg
-from urllib.parse import urlparse
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, text
+from sqlalchemy.orm import declarative_base, Session
+from datetime import datetime
 
 app = Flask(__name__)
 
-# Подключение к БД
+# Подключение к БД через SQLAlchemy
 DATABASE_URL = os.environ.get('DATABASE_URL')
-conn = None
+engine = None
+Base = declarative_base()
+
+
+class Message(Base):
+    __tablename__ = 'messages'
+    id = Column(Integer, primary_key=True)
+    content = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 
 if DATABASE_URL:
     try:
-        # Используем psycopg3 (совместим с Python 3.13)
-        conn = psycopg.connect(DATABASE_URL)
-        print("✅ Database connected successfully!")
+        # Используем SQLAlchemy для подключения
+        engine = create_engine(DATABASE_URL)
 
-        # Создание таблицы
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id SERIAL PRIMARY KEY,
-                    content TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
-            conn.commit()
-            print("✅ Table 'messages' ready!")
+        # Создаем таблицу
+        Base.metadata.create_all(engine)
+        print("✅ Database connected successfully!")
+        print("✅ Table 'messages' ready!")
 
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
-        conn = None
+        engine = None
 
 
 @app.route('/')
 def hello():
-    db_status = "connected" if conn else "disconnected"
+    db_status = "connected" if engine else "disconnected"
     return f"Hello, Serverless! 🚀 DB: {db_status}\n", 200, {'Content-Type': 'text/plain'}
 
 
@@ -50,24 +52,28 @@ def echo():
 
 @app.route('/save', methods=['POST'])
 def save_message():
-    if not conn:
+    if not engine:
         return jsonify({"error": "Database not connected"}), 500
 
     data = request.get_json()
     if not data or 'message' not in data:
         return jsonify({"error": "Missing 'message' in request"}), 400
 
-    message = data.get('message', '')
+    message_text = data.get('message', '')
 
     try:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO messages (content) VALUES (%s) RETURNING id", (message,))
-            message_id = cur.fetchone()[0]
-            conn.commit()
+        with Session(engine) as session:
+            # Используем raw SQL для совместимости
+            result = session.execute(
+                text("INSERT INTO messages (content) VALUES (:content) RETURNING id"),
+                {"content": message_text}
+            )
+            message_id = result.scalar()
+            session.commit()
 
         return jsonify({
             "status": "saved",
-            "message": message,
+            "message": message_text,
             "id": message_id
         })
     except Exception as e:
@@ -76,13 +82,15 @@ def save_message():
 
 @app.route('/messages')
 def get_messages():
-    if not conn:
+    if not engine:
         return jsonify({"error": "Database not connected"}), 500
 
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, content, created_at FROM messages ORDER BY created_at DESC LIMIT 10")
-            rows = cur.fetchall()
+        with Session(engine) as session:
+            result = session.execute(
+                text("SELECT id, content, created_at FROM messages ORDER BY created_at DESC LIMIT 10")
+            )
+            rows = result.fetchall()
 
         messages = [
             {
