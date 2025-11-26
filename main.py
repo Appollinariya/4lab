@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
-import psycopg2
 import os
+import psycopg
 from urllib.parse import urlparse
 
 app = Flask(__name__)
@@ -11,16 +11,8 @@ conn = None
 
 if DATABASE_URL:
     try:
-        # Конвертируем postgresql:// в postgres:// для psycopg2
-        db_url = DATABASE_URL.replace('postgresql://', 'postgres://')
-        url = urlparse(db_url)
-        conn = psycopg2.connect(
-            database=url.path[1:],
-            user=url.username,
-            password=url.password,
-            host=url.hostname,
-            port=url.port
-        )
+        # Используем psycopg3 (совместим с Python 3.13)
+        conn = psycopg.connect(DATABASE_URL)
         print("✅ Database connected successfully!")
 
         # Создание таблицы
