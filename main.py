@@ -1,58 +1,166 @@
 from flask import Flask, request, jsonify
-from datetime import datetime
+import psycopg
 import os
+from datetime import datetime
 
 app = Flask(__name__)
 
-# Имитация базы данных в памяти
-messages_storage = []
-next_id = 1
+# Глобальное подключение к БД
+db_connection = None
+
+
+def init_database():
+    """Инициализация подключения к базе данных"""
+    global db_connection
+
+    DATABASE_URL = os.environ.get('DATABASE_URL')
+
+    if not DATABASE_URL:
+        print("❌ DATABASE_URL not found in environment variables")
+        return
+
+    try:
+        # Подключаемся к PostgreSQL используя psycopg
+        db_connection = psycopg.connect(DATABASE_URL)
+        print("✅ Successfully connected to PostgreSQL database!")
+
+        # Создаем таблицу если её нет
+        with db_connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id SERIAL PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            db_connection.commit()
+            print("✅ Table 'messages' is ready!")
+
+    except Exception as error:
+        print(f"❌ Database connection failed: {error}")
+        db_connection = None
+
+
+# Инициализируем базу при запуске
+init_database()
 
 
 @app.route('/')
-def hello():
-    return "Hello, Serverless! 🚀 Simple memory storage\n", 200, {'Content-Type': 'text/plain'}
-
-
-@app.route('/echo', methods=['POST'])
-def echo():
-    data = request.get_json()
-    return jsonify({
-        "status": "received",
-        "you_sent": data,
-        "length": len(str(data)) if data else 0
-    })
+def home():
+    """Главная страница с статусом БД"""
+    db_status = "connected" if db_connection else "disconnected"
+    return f"Hello, Serverless! 🚀 PostgreSQL: {db_status}\n"
 
 
 @app.route('/save', methods=['POST'])
 def save_message():
-    global next_id
+    """Сохранить сообщение в базу данных"""
+    if not db_connection:
+        return jsonify({"error": "Database not available"}), 503
 
     data = request.get_json()
-    if not data or 'message' not in data:
-        return jsonify({"error": "Missing 'message' in request"}), 400
+    if not data:
+        return jsonify({"error": "No JSON data provided"}), 400
 
-    message_text = data.get('message', '')
+    message_content = data.get('message', '').strip()
+    if not message_content:
+        return jsonify({"error": "Message content is empty"}), 400
 
-    message = {
-        "id": next_id,
-        "text": message_text,
-        "time": datetime.now().isoformat()
-    }
-    messages_storage.append(message)
-    next_id += 1
+    try:
+        with db_connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO messages (content) VALUES (%s) RETURNING id, created_at",
+                (message_content,)
+            )
+            result = cursor.fetchone()
+            db_connection.commit()
 
-    return jsonify({
-        "status": "saved",
-        "message": message_text,
-        "id": message["id"]
-    })
+            message_id, created_at = result
+
+            return jsonify({
+                "status": "success",
+                "message": "Message saved to database",
+                "data": {
+                    "id": message_id,
+                    "content": message_content,
+                    "created_at": created_at.isoformat()
+                }
+            })
+
+    except Exception as error:
+        return jsonify({"error": f"Database error: {str(error)}"}), 500
 
 
 @app.route('/messages')
 def get_messages():
-    recent_messages = messages_storage[-10:] if messages_storage else []
-    return jsonify(recent_messages)
+    """Получить последние 10 сообщений из базы"""
+    if not db_connection:
+        return jsonify({"error": "Database not available"}), 503
+
+    try:
+        with db_connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, content, created_at 
+                FROM messages 
+                ORDER BY created_at DESC 
+                LIMIT 10
+            """)
+
+            messages = []
+            for row in cursor.fetchall():
+                messages.append({
+                    "id": row[0],
+                    "content": row[1],
+                    "created_at": row[2].isoformat()
+                })
+
+            return jsonify({
+                "status": "success",
+                "count": len(messages),
+                "messages": messages
+            })
+
+    except Exception as error:
+        return jsonify({"error": f"Database error: {str(error)}"}), 500
+
+
+@app.route('/echo', methods=['POST'])
+def echo():
+    """Тестовый endpoint"""
+    data = request.get_json()
+    return jsonify({
+        "status": "received",
+        "you_sent": data,
+        "timestamp": datetime.now().isoformat()
+    })
+
+
+@app.route('/health')
+def health_check():
+    """Проверка здоровья приложения и базы данных"""
+    db_status = "healthy" if db_connection else "unhealthy"
+
+    try:
+        if db_connection:
+            with db_connection.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) FROM messages")
+                message_count = cursor.fetchone()[0]
+        else:
+            message_count = 0
+
+        return jsonify({
+            "status": "ok",
+            "database": db_status,
+            "message_count": message_count,
+            "timestamp": datetime.now().isoformat()
+        })
+
+    except Exception as error:
+        return jsonify({
+            "status": "error",
+            "database": "unhealthy",
+            "error": str(error)
+        }), 500
 
 
 if __name__ == '__main__':
