@@ -1,43 +1,17 @@
 from flask import Flask, request, jsonify
-import os
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, text
-from sqlalchemy.orm import declarative_base, Session
 from datetime import datetime
+import os
 
 app = Flask(__name__)
 
-# Подключение к БД через SQLAlchemy
-DATABASE_URL = os.environ.get('DATABASE_URL')
-engine = None
-Base = declarative_base()
-
-
-class Message(Base):
-    __tablename__ = 'messages'
-    id = Column(Integer, primary_key=True)
-    content = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-if DATABASE_URL:
-    try:
-        # Используем SQLAlchemy для подключения
-        engine = create_engine(DATABASE_URL)
-
-        # Создаем таблицу
-        Base.metadata.create_all(engine)
-        print("✅ Database connected successfully!")
-        print("✅ Table 'messages' ready!")
-
-    except Exception as e:
-        print(f"❌ Database connection failed: {e}")
-        engine = None
+# Имитация базы данных в памяти
+messages_storage = []
+next_id = 1
 
 
 @app.route('/')
 def hello():
-    db_status = "connected" if engine else "disconnected"
-    return f"Hello, Serverless! 🚀 DB: {db_status}\n", 200, {'Content-Type': 'text/plain'}
+    return "Hello, Serverless! 🚀 Simple memory storage\n", 200, {'Content-Type': 'text/plain'}
 
 
 @app.route('/echo', methods=['POST'])
@@ -52,8 +26,7 @@ def echo():
 
 @app.route('/save', methods=['POST'])
 def save_message():
-    if not engine:
-        return jsonify({"error": "Database not connected"}), 500
+    global next_id
 
     data = request.get_json()
     if not data or 'message' not in data:
@@ -61,47 +34,25 @@ def save_message():
 
     message_text = data.get('message', '')
 
-    try:
-        with Session(engine) as session:
-            # Используем raw SQL для совместимости
-            result = session.execute(
-                text("INSERT INTO messages (content) VALUES (:content) RETURNING id"),
-                {"content": message_text}
-            )
-            message_id = result.scalar()
-            session.commit()
+    message = {
+        "id": next_id,
+        "text": message_text,
+        "time": datetime.now().isoformat()
+    }
+    messages_storage.append(message)
+    next_id += 1
 
-        return jsonify({
-            "status": "saved",
-            "message": message_text,
-            "id": message_id
-        })
-    except Exception as e:
-        return jsonify({"error": f"Database error: {str(e)}"}), 500
+    return jsonify({
+        "status": "saved",
+        "message": message_text,
+        "id": message["id"]
+    })
 
 
 @app.route('/messages')
 def get_messages():
-    if not engine:
-        return jsonify({"error": "Database not connected"}), 500
-
-    try:
-        with Session(engine) as session:
-            result = session.execute(
-                text("SELECT id, content, created_at FROM messages ORDER BY created_at DESC LIMIT 10")
-            )
-            rows = result.fetchall()
-
-        messages = [
-            {
-                "id": row[0],
-                "text": row[1],
-                "time": row[2].isoformat() if row[2] else None
-            } for row in rows
-        ]
-        return jsonify(messages)
-    except Exception as e:
-        return jsonify({"error": f"Database error: {str(e)}"}), 500
+    recent_messages = messages_storage[-10:] if messages_storage else []
+    return jsonify(recent_messages)
 
 
 if __name__ == '__main__':
